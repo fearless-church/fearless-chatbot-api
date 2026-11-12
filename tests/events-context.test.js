@@ -186,12 +186,13 @@ test("the original prompt and conversation survive, with context appended only t
   const prompt = source.match(/const SYSTEM_PROMPT = `([\s\S]*?)`;/)[1];
   assert.equal(crypto.createHash("sha256").update(prompt).digest("hex"), "ea801f30d5eea4ee0a18030d7b90ae2a3e407123123d8a14ba48355c03e4bbdd");
   let handler, sent, emails = 0, health;
-  const app = { use() {}, post(_path, _limiter, fn) { handler = fn; }, get(_path, fn) { health = fn; }, listen() {} };
+  const app = { use() {}, post(_path, ...handlers) { handler = handlers.at(-1); }, get(_path, fn) { health = fn; }, listen() {} };
   const express = () => app; express.json = () => () => {};
   const context = renderContext({ events: publicEvents({ events: [breakfast] }), verifiedAt: start }, start, false);
   const knowledge = "CURRENT PUBLIC WEBSITE KNOWLEDGE\nVerified current public pages.";
   const deps = {
     express, cors: () => () => {}, "express-rate-limit": () => () => {}, "node:crypto": crypto,
+    "./proxy-attribution": require("../proxy-attribution"), "./website-proxy-public-key.json": require("../website-proxy-public-key.json"),
     "@anthropic-ai/sdk": { default: class { constructor() { this.messages = { create: async (request) => { sent = request; return { content: [{ type: "text", text: "The original assistant response." }] }; } }; } } },
     resend: { Resend: class { constructor() { this.emails = { send() { emails++; throw Error("Unexpected notification"); } }; } } },
     "./events-context": { createEventContextProvider: () => async () => context },
@@ -206,5 +207,5 @@ test("the original prompt and conversation survive, with context appended only t
   assert.equal(sent.model, "claude-sonnet-4-6"); assert.equal(sent.max_tokens, 400);
   assert.equal(output.message, "The original assistant response."); assert.equal(emails, 0);
   health({}, { json(value) { output = value; } });
-  assert.equal(output.revision, "reliability-20261112");
+  assert.equal(output.revision, "reliability-signed-20261112");
 });

@@ -9,12 +9,13 @@ const marker = '[ESCALATE: name="Fixture Visitor" email="fixture@example.test" q
 function harness(options = {}) {
   let handler, limiter, sequence = 0;
   const sends = [], modelCalls = [], logs = [];
-  const app = { use() {}, post(_path, _limiter, fn) { handler = fn; }, get() {}, listen() {} };
+  const app = { use() {}, post(_path, ...handlers) { handler = handlers.at(-1); }, get() {}, listen() {} };
   const express = () => app; express.json = () => () => {};
   const state = { reply: options.reply ?? "The unchanged original reply.", send: options.send ?? (async () => ({ data: { id: "private-provider-id" }, error: null })) };
   const deps = {
     express, cors: () => () => {}, "express-rate-limit": (value) => { limiter = value; return () => {}; },
     "node:crypto": { randomUUID: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}` },
+    "./proxy-attribution": require("../proxy-attribution"), "./website-proxy-public-key.json": require("../website-proxy-public-key.json"),
     "@anthropic-ai/sdk": { default: class { constructor() { this.messages = { create: async request => { modelCalls.push(request); if (options.modelFailure) throw new Error("PRIVATE_PROVIDER_SECRET"); return { content: [{ type: "text", text: state.reply }] }; } }; } } },
     resend: { Resend: class { constructor() { this.emails = { send: async (...args) => { sends.push(args); return state.send(...args); } }; } } },
     "./events-context": { createEventContextProvider: () => async () => "Verified public events." },
