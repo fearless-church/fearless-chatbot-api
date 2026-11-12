@@ -3,6 +3,10 @@ const cors = require("cors");
 const rateLimit = require("express-rate-limit");
 const Anthropic = require("@anthropic-ai/sdk").default;
 const { Resend } = require("resend");
+const { createEventContextProvider } = require("./events-context");
+const getEventContext = createEventContextProvider();
+const { createKnowledgeContextProvider } = require("./knowledge-context");
+const getKnowledgeContext = createKnowledgeContextProvider();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -130,10 +134,11 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: "Messages array is required" });
     }
+    const [knowledgeContext, eventContext] = await Promise.all([getKnowledgeContext(messages), getEventContext()]);
     const response = await client.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 400,
-      system: SYSTEM_PROMPT,
+      system: SYSTEM_PROMPT + "\n\n" + knowledgeContext + "\n\n" + eventContext,
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
     });
     let assistantMessage = response.content.filter((block) => block.type === "text").map((block) => block.text).join("\n") || "I'm sorry, I couldn't process that. Please try again.";
@@ -162,6 +167,6 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
   }
 });
 
-app.get("/health", (req, res) => { res.json({ status: "ok" }); });
+app.get("/health", (req, res) => { res.json({ status: "ok", revision: "public-knowledge-20261112" }); });
 
 app.listen(PORT, () => { console.log(`Fearless Chatbot API running on port ${PORT}`); });
