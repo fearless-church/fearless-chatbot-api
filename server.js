@@ -3,6 +3,7 @@ const cors = require("cors");
 const rateLimit = require("express-rate-limit");
 const Anthropic = require("@anthropic-ai/sdk").default;
 const { Resend } = require("resend");
+const { randomUUID } = require("node:crypto");
 const { createEventContextProvider } = require("./events-context");
 const getEventContext = createEventContextProvider();
 const { createKnowledgeContextProvider } = require("./knowledge-context");
@@ -35,12 +36,29 @@ if (process.env.NODE_ENV === "development") {
 
 app.use(express.json());
 
+function beginRequest(req, res) {
+  const requestId = randomUUID();
+  res.setHeader("X-Fearless-Request-Id", requestId);
+  return requestId;
+}
+function logStage(requestId, stage, status) {
+  console.log({ event: "fearless_assistant_request", requestId, stage, status });
+}
+
 const chatLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 30,
-  message: { error: "Too many requests. Please wait a moment and try again." },
   standardHeaders: true,
   legacyHeaders: false,
+  handler(req, res) {
+    const requestId = beginRequest(req, res);
+    const resetAt = req.rateLimit?.resetTime?.getTime();
+    const retryAfterSeconds = Number.isFinite(resetAt) ? Math.max(1, Math.min(60, Math.ceil((resetAt - Date.now()) / 1000))) : 60;
+    res.setHeader("X-Fearless-Error", "CHAT_RATE_LIMITED");
+    res.setHeader("Retry-After", String(retryAfterSeconds));
+    logStage(requestId, "rate_limit", 429);
+    return res.status(429).json({ error: "Too many requests. Please wait a moment and try again.", code: "CHAT_RATE_LIMITED", retryAfterSeconds });
+  },
 });
 
 const client = new Anthropic({
@@ -129,12 +147,16 @@ When you cannot answer from your knowledge base, do NOT make up an answer. Inste
 Only use this after collecting both name and email.`;
 
 app.post("/api/chat", chatLimiter, async (req, res) => {
+  const requestId = beginRequest(req, res);
+  let stage = "validation";
   try {
     const { messages } = req.body;
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: "Messages array is required" });
     }
+    stage = "public_context";
     const [knowledgeContext, eventContext] = await Promise.all([getKnowledgeContext(messages), getEventContext()]);
+    stage = "model";
     const response = await client.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 400,
@@ -144,12 +166,13 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
     let assistantMessage = response.content.filter((block) => block.type === "text").map((block) => block.text).join("\n") || "I'm sorry, I couldn't process that. Please try again.";
     const escalateMatch = assistantMessage.match(/\[ESCALATE:\s*name="([^"]+)"\s*email="([^"]+)"\s*question="([^"]+)"\]/);
     if (escalateMatch) {
+      stage = "escalation";
       const visitorName = escalateMatch[1];
       const visitorEmail = escalateMatch[2];
       const visitorQuestion = escalateMatch[3];
       assistantMessage = assistantMessage.replace(escalateMatch[0], "").trim();
       try {
-        await resend.emails.send({
+        const delivery = await resend.emails.send({
           from: process.env.RESEND_FROM_EMAIL || "Fearless Assistant <assistant@fearless.church>",
           to: ["info@fearless.church"],
           cc: [visitorEmail],
@@ -157,16 +180,25 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
           subject: `Chat Assistant: Question from ${visitorName}`,
           html: `<div style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:600px;margin:0 auto"><div style="background:#0A0A0A;padding:24px;text-align:center"><h1 style="color:#FFF;font-size:20px;margin:0">FEARLESS CHURCH</h1><p style="color:rgba(255,255,255,.5);font-size:12px;margin-top:4px">Chat Assistant Escalation</p></div><div style="padding:32px 24px;background:#FAFAFA"><p style="font-size:14px;color:#333;line-height:1.6">A visitor on <strong>fearless.church</strong> asked a question the assistant could not fully answer.</p><div style="background:#FFF;border:1px solid #E5E5E5;border-radius:8px;padding:20px;margin:20px 0"><p style="font-size:12px;color:#999;text-transform:uppercase;margin-bottom:8px">Visitor</p><p style="font-size:15px;color:#1A1A1A;margin-bottom:16px"><strong>${visitorName}</strong> (${visitorEmail})</p><p style="font-size:12px;color:#999;text-transform:uppercase;margin-bottom:8px">Question</p><p style="font-size:15px;color:#1A1A1A">${visitorQuestion}</p></div><p style="font-size:13px;color:#666;line-height:1.5">Reply to this email to respond directly to <strong>${visitorName}</strong>. They have been CC'd.</p></div><div style="padding:16px 24px;text-align:center;background:#0A0A0A"><p style="font-size:11px;color:rgba(255,255,255,.3)">FEARLESS CHURCH</p></div></div>`,
         });
-        console.log(`Escalation email sent for ${visitorName} (${visitorEmail})`);
-      } catch (emailError) { console.error("Resend email error:", emailError); }
+        if (delivery?.error || typeof delivery?.data?.id !== "string" || !delivery.data.id.trim()) {
+          logStage(requestId, delivery?.error ? "escalation_rejected" : "escalation_unconfirmed", 200);
+          return res.json({ message: "I couldn't confirm that your message was sent. Please email info@fearless.church directly.", code: "ESCALATION_UNCONFIRMED" });
+        }
+        logStage(requestId, "escalation_accepted", 200);
+        assistantMessage = "I've submitted your question to our team at info@fearless.church and included you for a copy.";
+      } catch {
+        logStage(requestId, "escalation_unconfirmed", 200);
+        return res.json({ message: "I couldn't confirm that your message was sent. Please email info@fearless.church directly.", code: "ESCALATION_UNCONFIRMED" });
+      }
     }
+    logStage(requestId, "response", 200);
     res.json({ message: assistantMessage });
-  } catch (error) {
-    console.error("Anthropic API error:", error);
+  } catch {
+    logStage(requestId, stage, 500);
     res.status(500).json({ error: "Something went wrong. Please try again." });
   }
 });
 
-app.get("/health", (req, res) => { res.json({ status: "ok", revision: "public-knowledge-20261112" }); });
+app.get("/health", (req, res) => { res.json({ status: "ok", revision: "reliability-20261112" }); });
 
 app.listen(PORT, () => { console.log(`Fearless Chatbot API running on port ${PORT}`); });

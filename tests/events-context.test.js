@@ -191,7 +191,7 @@ test("the original prompt and conversation survive, with context appended only t
   const context = renderContext({ events: publicEvents({ events: [breakfast] }), verifiedAt: start }, start, false);
   const knowledge = "CURRENT PUBLIC WEBSITE KNOWLEDGE\nVerified current public pages.";
   const deps = {
-    express, cors: () => () => {}, "express-rate-limit": () => () => {},
+    express, cors: () => () => {}, "express-rate-limit": () => () => {}, "node:crypto": crypto,
     "@anthropic-ai/sdk": { default: class { constructor() { this.messages = { create: async (request) => { sent = request; return { content: [{ type: "text", text: "The original assistant response." }] }; } }; } } },
     resend: { Resend: class { constructor() { this.emails = { send() { emails++; throw Error("Unexpected notification"); } }; } } },
     "./events-context": { createEventContextProvider: () => async () => context },
@@ -200,11 +200,11 @@ test("the original prompt and conversation survive, with context appended only t
   vm.runInNewContext(source, { require(name) { if (!deps[name]) throw Error("Unexpected import"); return deps[name]; }, process: { env: {} }, console: { log() {}, error() {} } });
   const messages = [{ role: "user", content: "Can I find community?" }, { role: "assistant", content: "Tell me what you're looking for." }, { role: "user", content: "Anything for men, like breakfast and prayer?" }];
   let output;
-  await handler({ body: { messages } }, { status() { return this; }, json(value) { output = value; } });
+  await handler({ body: { messages } }, { setHeader() {}, status() { return this; }, json(value) { output = value; } });
   assert.equal(sent.system, prompt + "\n\n" + knowledge + "\n\n" + context);
   assert.deepEqual(JSON.parse(JSON.stringify(sent.messages)), messages);
   assert.equal(sent.model, "claude-sonnet-4-6"); assert.equal(sent.max_tokens, 400);
   assert.equal(output.message, "The original assistant response."); assert.equal(emails, 0);
   health({}, { json(value) { output = value; } });
-  assert.equal(output.revision, "public-knowledge-20261112");
+  assert.equal(output.revision, "reliability-20261112");
 });

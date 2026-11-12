@@ -16,9 +16,19 @@ The public catalog excludes protected staff pages and unpublished content. Only 
 
 Run `node --test tests/*.test.js` and `node --check server.js`. Tests use local fixtures and do not contact Anthropic, Resend, staff or visitors.
 
-For deployment verification, check `/health` for revision `public-knowledge-20261112`, then ask benign questions through the live website. Confirm the real answer and destination, including Men's Breakfast, Sunday location and The Table. Do not supply a name or email or ask for staff followup: the original escalation workflow sends real email.
+For deployment verification, check `/health` for revision `reliability-20261112`, then ask benign questions through the live website. Confirm the real answer and destination, including Men's Breakfast, Sunday location and The Table. Do not supply a name or email or ask for staff followup: the original escalation workflow sends real email.
 
 The website proxy additionally retries only an explicit upstream edge challenge proven by all three markers: HTTP 429, `cf-mitigated: challenge`, and an HTML response. It does not retry ambiguous application or network failures that might follow an email action.
+
+## Application diagnostics and escalation acceptance
+
+An application rate limit returns HTTP 429, `X-Fearless-Error: CHAT_RATE_LIMITED`, JSON code `CHAT_RATE_LIMITED`, and matching `Retry-After` and `retryAfterSeconds` values between 1 and 60. This distinguishes the Express quota from an upstream hosting or edge response. The existing quota remains 30 requests per minute. Proxy attribution is not changed in this release, so the known shared quota risk remains.
+
+Requests receive a generated `X-Fearless-Request-Id`. Structured logs include only that identifier, event, stage and status. Conversation text, visitor identity, email contents, provider response IDs and raw provider exceptions are not logged.
+
+Escalation succeeds only when Resend returns a nonempty `data.id` and no error. The visitor receives a factual submitted confirmation after provider acceptance; acceptance does not prove delivery. This replaces escalation text that could otherwise be empty or make unsupported delivery or followup timing claims. Returned errors, malformed responses and thrown failures instead produce an honest uncertainty message and direct contact option. Normal model replies and the original prompt remain unchanged.
+
+No automatic retries or deduplication were added. The current protocol has no stable logical submission identifier, so adding deduplication now could incorrectly suppress a separate inquiry. Keep ambiguous sends unretried until a deliberate submission identifier and provider idempotency contract are implemented together.
 
 ## Release and rollback
 
